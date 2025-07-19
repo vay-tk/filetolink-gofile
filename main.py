@@ -52,59 +52,100 @@ except Exception as e:
 def upload_to_gofile(file_path, progress_callback=None):
     logger.info("Uploading to GoFile: %s", file_path)
     
-    # Use the main GoFile upload endpoint directly
-    upload_url = "https://store1.gofile.io/uploadFile"
-    
     try:
         file_size = os.path.getsize(file_path)
         logger.info(f"File size: {file_size / (1024*1024):.2f} MB")
         
         if progress_callback:
+            progress_callback("📤 Getting upload server...")
+        
+        # First try to get the best server
+        upload_url = "https://store1.gofile.io/uploadFile"
+        try:
+            server_response = requests.get("https://api.gofile.io/getServer", timeout=10)
+            if server_response.status_code == 200:
+                server_data = server_response.json()
+                if server_data.get("status") == "ok":
+                    server = server_data["data"]["server"]
+                    upload_url = f"https://{server}.gofile.io/uploadFile"
+                    logger.info(f"Using server: {server}")
+        except:
+            logger.info("Using fallback server")
+        
+        if progress_callback:
             progress_callback("📤 Starting upload...")
         
-        # Increase timeout for larger files (up to 30 minutes for 2GB files)
-        timeout = min(1800, max(300, file_size // (1024 * 1024) * 10))  # 10 seconds per MB, max 30 minutes
+        # Calculate timeout based on file size (minimum 5 minutes, maximum 30 minutes)
+        timeout = min(1800, max(300, file_size // (1024 * 1024) * 15))  # 15 seconds per MB
         logger.info(f"Using timeout: {timeout} seconds for this upload")
         
+        # Prepare the upload with streaming
         with open(file_path, "rb") as f:
-            files = {'file': (os.path.basename(file_path), f)}
-            data = {'token': ''}  # Empty token for guest uploads
+            files = {'file': (os.path.basename(file_path), f, 'application/octet-stream')}
             
             if progress_callback:
                 progress_callback("📤 Uploading to GoFile...")
             
-            response = requests.post(upload_url, files=files, data=data, timeout=timeout)
+            # Use session for better connection handling
+            session = requests.Session()
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+            
+            response = session.post(
+                upload_url, 
+                files=files, 
+                timeout=timeout,
+                stream=True
+            )
 
         logger.info(f"Upload response status: {response.status_code}")
-        logger.info(f"Upload response text: {response.text}")
+        logger.info(f"Upload response headers: {dict(response.headers)}")
         
         if response.status_code != 200:
             logger.error(f"Upload failed: HTTP {response.status_code}")
+            logger.error(f"Response content: {response.text}")
             return None
             
-        if not response.text.strip():
+        response_text = response.text.strip()
+        logger.info(f"Upload response text: {response_text}")
+        
+        if not response_text:
             logger.error("Empty response from GoFile API")
             return None
 
-        result = response.json()
-        if result["status"] != "ok":
+        try:
+            result = response.json()
+        except ValueError as e:
+            logger.error(f"Invalid JSON response: {e}")
+            logger.error(f"Raw response: {response_text}")
+            return None
+            
+        if result.get("status") != "ok":
             logger.error(f"Upload failed: {result}")
             return None
             
-        return result["data"]["downloadPage"]
+        download_page = result.get("data", {}).get("downloadPage")
+        if not download_page:
+            logger.error("No download page in response")
+            return None
+            
+        logger.info(f"Upload successful: {download_page}")
+        return download_page
         
     except requests.exceptions.Timeout:
-        logger.error("Upload timeout - file too large or slow connection")
+        logger.error(f"Upload timeout after {timeout} seconds - file too large or slow connection")
+        return None
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"Connection error during upload: {e}")
         return None
     except requests.exceptions.RequestException as e:
         logger.error(f"Network error during upload: {e}")
         return None
-    except ValueError as e:
-        logger.error(f"JSON parsing error: {e}")
-        logger.error(f"Response content: {response.text}")
-        return None
     except Exception as e:
         logger.error(f"Unexpected error during upload: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
     finally:
         # Clean up the downloaded file
@@ -426,24 +467,36 @@ async def handle_gofile_upload(message, status_msg, file_info):
             f"📄 **File:** `{file_name}`\n"
             f"📏 **Size:** `{file_size}`\n"
             f"✅ **Downloaded:** `{download_time:.1f}s`\n"
-            f"⏳ **Status:** Uploading to GoFile..."
+            f"⏳ **Status:** Preparing upload..."
         )
 
-        # Upload progress callback
+        # Upload progress callback with more frequent updates
+        last_update = [time.time()]
         async def update_progress(status):
             try:
-                await status_msg.edit_text(
-                    f"📁 **Type:** `{file_type}`\n"
-                    f"📄 **File:** `{file_name}`\n"
-                    f"📏 **Size:** `{file_size}`\n"
-                    f"✅ **Downloaded:** `{download_time:.1f}s`\n"
-                    f"⏳ **Status:** {status}"
-                )
-            except:
-                pass
+                current_time = time.time()
+                # Update every 3 seconds to avoid rate limits
+                if current_time - last_update[0] >= 3:
+                    await status_msg.edit_text(
+                        f"📁 **Type:** `{file_type}`\n"
+                        f"📄 **File:** `{file_name}`\n"
+                        f"📏 **Size:** `{file_size}`\n"
+                        f"✅ **Downloaded:** `{download_time:.1f}s`\n"
+                        f"⏳ **Status:** {status}"
+                    )
+                    last_update[0] = current_time
+            except Exception as e:
+                logger.warning(f"Failed to update progress: {e}")
 
         start_upload_time = time.time()
-        link = upload_to_gofile(file_path, lambda status: bot.loop.create_task(update_progress(status)))
+        
+        # Add timeout handling for the upload
+        try:
+            link = upload_to_gofile(file_path, lambda status: bot.loop.create_task(update_progress(status)))
+        except Exception as e:
+            logger.error(f"Upload function failed: {e}")
+            link = None
+            
         upload_time = time.time() - start_upload_time
 
         if link:
@@ -462,12 +515,24 @@ async def handle_gofile_upload(message, status_msg, file_info):
         else:
             await status_msg.edit_text(
                 f"❌ **GoFile upload failed!**\n\n"
-                f"Please try again or use the direct Telegram links."
+                f"📁 **Type:** `{file_type}`\n"
+                f"📄 **File:** `{file_name}`\n"
+                f"📏 **Size:** `{file_size}`\n"
+                f"⏰ **Upload time:** `{upload_time:.1f}s`\n\n"
+                f"💡 **Try using the direct Telegram links instead!**"
             )
             
     except Exception as e:
         logger.error(f"Error in GoFile upload: {e}")
-        await status_msg.edit_text(f"❌ Error during GoFile upload: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        await status_msg.edit_text(
+            f"❌ **Error during GoFile upload**\n\n"
+            f"📁 **Type:** `{file_type}`\n"
+            f"📄 **File:** `{file_name}`\n"
+            f"❌ **Error:** `{str(e)[:100]}...`\n\n"
+            f"💡 **Please try using the direct Telegram links!**"
+        )
 
 
 # Handler for unsupported message types

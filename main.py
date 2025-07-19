@@ -478,11 +478,12 @@ async def handle_media(_, message: Message):
                 ]
                 keyboard_buttons.append(primary_row)
                 
-                # Fallback and additional options
+                # Fallback and additional options - Use unique_id instead of file_id
                 fallback_row = []
                 if telegram_direct:
                     fallback_row.append(InlineKeyboardButton("📱 Telegram Direct", url=telegram_direct))
-                fallback_row.append(InlineKeyboardButton("☁️ GoFile Upload", callback_data=f"gofile_{file_obj.file_id}"))
+                # Use shorter callback data with unique_id
+                fallback_row.append(InlineKeyboardButton("☁️ GoFile Upload", callback_data=f"gf_{unique_id}"))
                 keyboard_buttons.append(fallback_row)
                 
                 keyboard = InlineKeyboardMarkup(keyboard_buttons)
@@ -536,17 +537,25 @@ async def handle_media(_, message: Message):
 async def handle_callback(_, callback_query):
     data = callback_query.data
     
-    if data.startswith("gofile_"):
-        file_id = data.replace("gofile_", "")
+    if data.startswith("gf_"):
+        # Extract unique_id from callback data
+        unique_id = int(data.replace("gf_", ""))
         await callback_query.answer("Uploading to GoFile...")
         
-        # Get the original message
+        # Get file info from storage
+        if unique_id not in file_storage:
+            await callback_query.message.edit_text("❌ File information not found!")
+            return
+            
+        stored_file_info = file_storage[unique_id]
+        
+        # Get the original message to reconstruct file info
         message = callback_query.message.reply_to_message
         if not message:
             await callback_query.message.edit_text("❌ Original file not found!")
             return
             
-        # Get file info again
+        # Get file info again from the original message
         file_info = get_file_info(message)
         if not file_info:
             await callback_query.message.edit_text("❌ Unable to process this file!")

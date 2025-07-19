@@ -61,6 +61,10 @@ def upload_to_gofile(file_path, progress_callback=None):
         if progress_callback:
             progress_callback("📤 Starting upload...")
         
+        # Increase timeout for larger files (up to 30 minutes for 2GB files)
+        timeout = min(1800, max(300, file_size // (1024 * 1024) * 10))  # 10 seconds per MB, max 30 minutes
+        logger.info(f"Using timeout: {timeout} seconds for this upload")
+        
         with open(file_path, "rb") as f:
             files = {'file': (os.path.basename(file_path), f)}
             data = {'token': ''}  # Empty token for guest uploads
@@ -68,7 +72,7 @@ def upload_to_gofile(file_path, progress_callback=None):
             if progress_callback:
                 progress_callback("📤 Uploading to GoFile...")
             
-            response = requests.post(upload_url, files=files, data=data, timeout=300)
+            response = requests.post(upload_url, files=files, data=data, timeout=timeout)
 
         logger.info(f"Upload response status: {response.status_code}")
         logger.info(f"Upload response text: {response.text}")
@@ -243,7 +247,7 @@ async def handle_media(_, message: Message):
     file_size = format_file_size(file_info['size'])
     file_type = file_info['type']
     
-    # Check file size limit
+    # Check file size limit - increased to 2GB
     if file_info['size'] > 2 * 1024 * 1024 * 1024:  # 2GB limit
         await message.reply_text(
             f"❌ **File too large!**\n\n"
@@ -253,6 +257,17 @@ async def handle_media(_, message: Message):
             f"Please send a smaller file."
         )
         return
+    
+    # Show warning for very large files
+    if file_info['size'] > 500 * 1024 * 1024:  # 500MB+
+        warning_msg = await message.reply_text(
+            f"⚠️ **Large file detected!**\n\n"
+            f"📁 **Type:** `{file_type}`\n"
+            f"📏 **Size:** `{file_size}`\n"
+            f"⏰ **Estimated time:** `{file_info['size'] // (1024 * 1024) * 2} seconds`\n\n"
+            f"This may take a while to upload. Please be patient..."
+        )
+        await warning_msg.delete()
     
     # Show initial status
     status_msg = await message.reply_text(
@@ -296,6 +311,11 @@ async def handle_media(_, message: Message):
                 pass
 
         start_upload_time = time.time()
+        
+        # Show additional status for large files
+        if file_info['size'] > 100 * 1024 * 1024:  # 100MB+
+            await update_progress("📤 Large file upload in progress... This may take several minutes.")
+        
         link = upload_to_gofile(file_path, lambda status: bot.loop.create_task(update_progress(status)))
         upload_time = time.time() - start_upload_time
 
@@ -335,7 +355,7 @@ async def handle_media(_, message: Message):
                 f"✅ **Downloaded:** `{download_time:.1f}s`\n"
                 f"❌ **Status:** Upload Failed"
             )
-            await message.reply_text("❌ Failed to upload to GoFile. Please try again.")
+            await message.reply_text("❌ Failed to upload to GoFile. Please try again later or try a smaller file.")
 
     except Exception as e:
         logger.error(f"Error processing {file_type}: {e}")

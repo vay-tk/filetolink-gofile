@@ -3,8 +3,9 @@ import logging
 import requests
 import time
 import tempfile
+import base64
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -115,6 +116,46 @@ def upload_to_gofile(file_path, progress_callback=None):
             logger.warning(f"Failed to clean up file {file_path}: {e}")
 
 
+# Generate Telegram direct links
+def generate_telegram_links(file_id, file_name, file_size):
+    """Generate direct download and streaming links from Telegram"""
+    try:
+        # Create a simple hash for the file
+        file_hash = base64.b64encode(file_id.encode()).decode()[:10]
+        
+        # Generate direct download link
+        download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_id}"
+        
+        # For streaming, we'll create a custom endpoint (this is a simplified example)
+        stream_url = f"https://tgstream.example.com/stream/{file_id}?hash={file_hash}"
+        
+        return {
+            'download': download_url,
+            'stream': stream_url,
+            'hash': file_hash
+        }
+    except Exception as e:
+        logger.error(f"Error generating Telegram links: {e}")
+        return None
+
+# Get file path from Telegram
+async def get_telegram_file_path(file_id):
+    """Get the file path from Telegram servers"""
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile"
+        params = {'file_id': file_id}
+        response = requests.get(url, params=params)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data['ok']:
+                return data['result']['file_path']
+        return None
+    except Exception as e:
+        logger.error(f"Error getting file path: {e}")
+        return None
+
+
 # Format file size for display
 def format_file_size(size_bytes):
     if size_bytes < 1024:
@@ -131,7 +172,7 @@ def format_file_size(size_bytes):
 @bot.on_message(filters.command("start") & filters.private)
 async def start_command(_, message: Message):
     welcome_text = """
-🚀 **Welcome to GoFile Upload Bot!**
+🚀 **Welcome to Advanced File Upload Bot!**
 
 📁 **Supported file types:**
 • 📄 Documents (PDF, DOC, ZIP, etc.)
@@ -144,13 +185,18 @@ async def start_command(_, message: Message):
 • 📎 Any other file type
 
 ✨ **Features:**
-• Fast uploads to GoFile
-• Progress tracking
-• Automatic file cleanup
-• Anonymous uploads
-• Up to 2GB file size
+• 📥 **Instant Direct Links** - Download immediately
+• 🎬 **Streaming Links** - Stream videos/audio
+• ☁️ **GoFile Upload** - Anonymous cloud storage
+• 📊 **Progress tracking**
+• 🔄 **Resumable downloads**
+• 🔒 **Anonymous uploads**
+• 📏 **Up to 2GB file size**
 
-🔒 **Privacy:** Your files are uploaded anonymously to GoFile
+🚀 **How it works:**
+1. Send me any file
+2. Get instant Telegram direct links
+3. Option to upload to GoFile for permanent storage
 
 Just send me any file or media! 📎
     """
@@ -229,7 +275,7 @@ def get_file_info(message):
     return None
 
 
-# Universal media handler
+# Universal media handler with instant links
 @bot.on_message((filters.document | filters.photo | filters.video | 
                 filters.audio | filters.voice | filters.video_note | 
                 filters.sticker) & filters.private)
@@ -247,7 +293,7 @@ async def handle_media(_, message: Message):
     file_size = format_file_size(file_info['size'])
     file_type = file_info['type']
     
-    # Check file size limit - increased to 2GB
+    # Check file size limit
     if file_info['size'] > 2 * 1024 * 1024 * 1024:  # 2GB limit
         await message.reply_text(
             f"❌ **File too large!**\n\n"
@@ -258,26 +304,112 @@ async def handle_media(_, message: Message):
         )
         return
     
-    # Show warning for very large files
-    if file_info['size'] > 500 * 1024 * 1024:  # 500MB+
-        warning_msg = await message.reply_text(
-            f"⚠️ **Large file detected!**\n\n"
-            f"📁 **Type:** `{file_type}`\n"
-            f"📏 **Size:** `{file_size}`\n"
-            f"⏰ **Estimated time:** `{file_info['size'] // (1024 * 1024) * 2} seconds`\n\n"
-            f"This may take a while to upload. Please be patient..."
-        )
-        await warning_msg.delete()
-    
-    # Show initial status
+    # Show processing message
     status_msg = await message.reply_text(
         f"📁 **Type:** `{file_type}`\n"
         f"📄 **File:** `{file_name}`\n"
         f"📏 **Size:** `{file_size}`\n"
-        f"⏳ **Status:** Downloading..."
+        f"⏳ **Status:** Generating links..."
     )
-
+    
     try:
+        # Get Telegram file path
+        file_path = await get_telegram_file_path(file_obj.file_id)
+        
+        if file_path:
+            # Generate instant Telegram links
+            telegram_links = {
+                'download': f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}",
+                'stream': f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}",
+                'hash': base64.b64encode(file_obj.file_id.encode()).decode()[:10]
+            }
+            
+            # Update status to show options
+            await status_msg.edit_text(
+                f"✅ **Links Generated Successfully!**\n\n"
+                f"📂 **File Name:** `{file_name}`\n"
+                f"📊 **File Size:** `{file_size}`\n\n"
+                f"📥 **Download:** [Direct Link]({telegram_links['download']})\n"
+                f"🎬 **Stream:** [Stream Link]({telegram_links['stream']})\n\n"
+                f"🔗 **File ID:** `{file_obj.file_id}`\n"
+                f"🔐 **Hash:** `{telegram_links['hash']}`",
+                disable_web_page_preview=True
+            )
+            
+            # Add inline keyboard for options
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📥 Download", url=telegram_links['download']),
+                    InlineKeyboardButton("🎬 Stream", url=telegram_links['stream'])
+                ],
+                [
+                    InlineKeyboardButton("☁️ Upload to GoFile", callback_data=f"gofile_{file_obj.file_id}")
+                ]
+            ])
+            
+            await message.reply_text(
+                f"🚀 **Choose your preferred option:**\n\n"
+                f"📥 **Direct Download** - Instant, resumable\n"
+                f"🎬 **Stream** - Watch/listen directly\n"
+                f"☁️ **GoFile** - Anonymous cloud upload\n\n"
+                f"💡 **Tip:** Direct links expire in 1 hour!",
+                reply_markup=keyboard
+            )
+            
+        else:
+            # Fallback to GoFile upload
+            await handle_gofile_upload(message, status_msg, file_info)
+            
+    except Exception as e:
+        logger.error(f"Error processing {file_type}: {e}")
+        await status_msg.edit_text(
+            f"📁 **Type:** `{file_type}`\n"
+            f"📄 **File:** `{file_name}`\n"
+            f"📏 **Size:** `{file_size}`\n"
+            f"❌ **Status:** Error occurred"
+        )
+        await message.reply_text(f"❌ Error: {e}")
+
+# Handle GoFile upload callback
+@bot.on_callback_query()
+async def handle_callback(_, callback_query):
+    data = callback_query.data
+    
+    if data.startswith("gofile_"):
+        file_id = data.replace("gofile_", "")
+        await callback_query.answer("Uploading to GoFile...")
+        
+        # Get the original message
+        message = callback_query.message.reply_to_message
+        if not message:
+            await callback_query.message.edit_text("❌ Original file not found!")
+            return
+            
+        # Get file info again
+        file_info = get_file_info(message)
+        if not file_info:
+            await callback_query.message.edit_text("❌ Unable to process this file!")
+            return
+            
+        # Start GoFile upload process
+        await handle_gofile_upload(message, callback_query.message, file_info)
+
+# Separate GoFile upload handler
+async def handle_gofile_upload(message, status_msg, file_info):
+    """Handle GoFile upload process"""
+    file_obj = file_info['file']
+    file_name = file_info['name']
+    file_size = format_file_size(file_info['size'])
+    file_type = file_info['type']
+    
+    try:
+        await status_msg.edit_text(
+            f"📁 **Type:** `{file_type}`\n"
+            f"📄 **File:** `{file_name}`\n"
+            f"📏 **Size:** `{file_size}`\n"
+            f"⏳ **Status:** Downloading for GoFile upload..."
+        )
+        
         start_time = time.time()
         # Download the file
         file_path = await message.download(
@@ -311,37 +443,17 @@ async def handle_media(_, message: Message):
                 pass
 
         start_upload_time = time.time()
-        
-        # Show additional status for large files
-        if file_info['size'] > 100 * 1024 * 1024:  # 100MB+
-            await update_progress("📤 Large file upload in progress... This may take several minutes.")
-        
         link = upload_to_gofile(file_path, lambda status: bot.loop.create_task(update_progress(status)))
         upload_time = time.time() - start_upload_time
 
         if link:
-            await status_msg.edit_text(
-                f"📁 **Type:** `{file_type}`\n"
-                f"📄 **File:** `{file_name}`\n"
-                f"📏 **Size:** `{file_size}`\n"
-                f"✅ **Downloaded:** `{download_time:.1f}s`\n"
-                f"✅ **Uploaded:** `{upload_time:.1f}s`\n"
-                f"🔗 **Status:** Upload Complete!"
-            )
-            
-            # Add emoji based on file type
             type_emoji = {
-                'Document': '📄',
-                'Photo': '🖼️',
-                'Video': '🎥',
-                'Audio': '🎵',
-                'Voice': '🎙️',
-                'Video Note': '📹',
-                'Sticker': '🎨'
+                'Document': '📄', 'Photo': '🖼️', 'Video': '🎥',
+                'Audio': '🎵', 'Voice': '🎙️', 'Video Note': '📹', 'Sticker': '🎨'
             }
             
-            await message.reply_text(
-                f"✅ **Upload Successful!**\n\n"
+            await status_msg.edit_text(
+                f"✅ **GoFile Upload Successful!**\n\n"
                 f"{type_emoji.get(file_type, '📎')} **{file_type}:** `{file_name}`\n"
                 f"🔗 [**Download Link**]({link})\n\n"
                 f"⚡ Total time: `{download_time + upload_time:.1f}s`",
@@ -349,23 +461,13 @@ async def handle_media(_, message: Message):
             )
         else:
             await status_msg.edit_text(
-                f"📁 **Type:** `{file_type}`\n"
-                f"📄 **File:** `{file_name}`\n"
-                f"📏 **Size:** `{file_size}`\n"
-                f"✅ **Downloaded:** `{download_time:.1f}s`\n"
-                f"❌ **Status:** Upload Failed"
+                f"❌ **GoFile upload failed!**\n\n"
+                f"Please try again or use the direct Telegram links."
             )
-            await message.reply_text("❌ Failed to upload to GoFile. Please try again later or try a smaller file.")
-
+            
     except Exception as e:
-        logger.error(f"Error processing {file_type}: {e}")
-        await status_msg.edit_text(
-            f"📁 **Type:** `{file_type}`\n"
-            f"📄 **File:** `{file_name}`\n"
-            f"📏 **Size:** `{file_size}`\n"
-            f"❌ **Status:** Error occurred"
-        )
-        await message.reply_text(f"❌ Error: {e}")
+        logger.error(f"Error in GoFile upload: {e}")
+        await status_msg.edit_text(f"❌ Error during GoFile upload: {e}")
 
 
 # Handler for unsupported message types

@@ -192,26 +192,33 @@ def store_file_info(file_obj, file_name, file_size, file_type):
         return None, None
 
 # Generate instant download and streaming links
-def generate_instant_links(unique_id, file_hash, file_name):
+def generate_instant_links(unique_id, file_hash, file_name, telegram_file_path):
     """Generate instant download and streaming links"""
     try:
-        # Base URLs for your custom endpoints (you can deploy these on Cloudflare Workers)
-        base_download_url = "https://tgdl-worker.your-domain.workers.dev"
-        base_stream_url = "https://tgstream-worker.your-domain.workers.dev"
+        if not telegram_file_path:
+            return None
+            
+        # Create working Telegram direct links
+        base_telegram_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}"
+        direct_download = f"{base_telegram_url}/{telegram_file_path}"
         
-        # For now, we'll use a simple local approach
-        download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}"
+        # For streaming, use the same URL (browsers will handle it appropriately)
+        direct_stream = f"{base_telegram_url}/{telegram_file_path}"
         
-        # Generate custom URLs (this is how professional bots do it)
-        custom_download = f"https://tgxdl3.workers.dev/v3/0:/dl/{unique_id}?hash={file_hash}"
-        custom_stream = f"https://tgxdl4.workers.dev/v3/0:/stream/{unique_id}?hash={file_hash}"
+        # Create shortened/custom-looking URLs for professional appearance
+        # These still point to real Telegram URLs
+        custom_download = f"https://tg-dl.herokuapp.com/d/{unique_id}?f={file_hash}"
+        custom_stream = f"https://tg-stream.herokuapp.com/s/{unique_id}?f={file_hash}"
         
         return {
-            'download': custom_download,
-            'stream': custom_stream,
-            'telegram_direct': download_url,
+            'download': direct_download,  # Use real working links
+            'stream': direct_stream,      # Use real working links
+            'custom_download': custom_download,  # Custom appearance (would need proxy)
+            'custom_stream': custom_stream,      # Custom appearance (would need proxy)
+            'telegram_direct': direct_download,
             'hash': file_hash,
-            'id': unique_id
+            'id': unique_id,
+            'file_path': telegram_file_path
         }
         
     except Exception as e:
@@ -443,18 +450,28 @@ async def handle_media(_, message: Message):
     )
     
     try:
+        # Get Telegram file path first
+        file_path = await get_telegram_file_path(file_obj.file_id)
+        
+        if not file_path:
+            await status_msg.edit_text(
+                f"❌ **Unable to get file path**\n\n"
+                f"📁 **Type:** `{file_type}`\n"
+                f"📄 **File:** `{file_name}`\n"
+                f"📏 **Size:** `{file_size}`\n\n"
+                f"🔄 **Falling back to GoFile upload...**"
+            )
+            await handle_gofile_upload(message, status_msg, file_info)
+            return
+        
         # Store file information and generate unique ID
         unique_id, file_hash = store_file_info(file_obj, file_name, file_info['size'], file_type)
         
         if unique_id and file_hash:
-            # Generate instant links
-            links = generate_instant_links(unique_id, file_hash, file_name)
+            # Generate instant links with real Telegram URLs
+            links = generate_instant_links(unique_id, file_hash, file_name, file_path)
             
             if links:
-                # Get Telegram file path for fallback
-                file_path = await get_telegram_file_path(file_obj.file_id)
-                telegram_direct = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}" if file_path else None
-                
                 # Update status with success
                 await status_msg.edit_text(
                     f"✅ **Links Generated Successfully!**\n\n"
@@ -468,45 +485,52 @@ async def handle_media(_, message: Message):
                     disable_web_page_preview=True
                 )
                 
-                # Create inline keyboard with multiple options
+                # Create inline keyboard with working links
                 keyboard_buttons = []
                 
-                # Primary buttons
+                # Primary buttons with working URLs
                 primary_row = [
                     InlineKeyboardButton("📥 Download", url=links['download']),
                     InlineKeyboardButton("🎬 Stream", url=links['stream'])
                 ]
                 keyboard_buttons.append(primary_row)
                 
-                # Fallback and additional options - Use unique_id instead of file_id
-                fallback_row = []
-                if telegram_direct:
-                    fallback_row.append(InlineKeyboardButton("📱 Telegram Direct", url=telegram_direct))
-                # Use shorter callback data with unique_id
-                fallback_row.append(InlineKeyboardButton("☁️ GoFile Upload", callback_data=f"gf_{unique_id}"))
+                # Additional options
+                fallback_row = [
+                    InlineKeyboardButton("📱 Telegram Link", url=links['telegram_direct']),
+                    InlineKeyboardButton("☁️ GoFile Upload", callback_data=f"gf_{unique_id}")
+                ]
                 keyboard_buttons.append(fallback_row)
+                
+                # Info button
+                info_row = [
+                    InlineKeyboardButton("ℹ️ File Info", callback_data=f"info_{unique_id}_{file_hash}")
+                ]
+                keyboard_buttons.append(info_row)
                 
                 keyboard = InlineKeyboardMarkup(keyboard_buttons)
                 
                 # Send final message with options
                 final_msg = f"""🚀 **Choose your preferred option:**
 
-📥 **Custom Download** - Fast, resumable
-🎬 **Custom Stream** - Direct streaming
-📱 **Telegram Direct** - Official Telegram link
+📥 **Direct Download** - Instant, resumable
+🎬 **Direct Stream** - Stream in browser
+📱 **Telegram Link** - Official Telegram URL
 ☁️ **GoFile Upload** - Permanent cloud storage
 
 ⚡ **File Details:**
 🆔 ID: `{unique_id}`
 🔐 Hash: `{file_hash}`
 📏 Size: `{file_size}`
+📁 Type: `{file_type}`
 
-💡 **Note:** Custom links are optimized for speed!"""
+💡 **Note:** Links are direct from Telegram servers!
+📢 **Join @YourChannel for updates!**"""
 
                 await message.reply_text(final_msg, reply_markup=keyboard)
                 
                 # Store additional metadata for analytics
-                logger.info(f"Generated links for {file_type}: {file_name} (ID: {unique_id})")
+                logger.info(f"Generated working links for {file_type}: {file_name} (ID: {unique_id})")
                 
             else:
                 # Fallback to GoFile upload if link generation fails
@@ -563,6 +587,40 @@ async def handle_callback(_, callback_query):
             
         # Start GoFile upload process
         await handle_gofile_upload(message, callback_query.message, file_info)
+    
+    elif data.startswith("info_"):
+        # Handle file info request
+        try:
+            parts = data.replace("info_", "").split("_")
+            if len(parts) >= 2:
+                unique_id = int(parts[0])
+                file_hash = parts[1]
+                
+                file_info = get_file_from_storage(unique_id, file_hash)
+                
+                if file_info:
+                    info_text = f"""📋 **File Information:**
+
+🆔 **ID:** `{unique_id}`
+📄 **Name:** `{file_info['file_name']}`
+📏 **Size:** `{format_file_size(file_info['file_size'])}`
+📁 **Type:** `{file_info['file_type']}`
+🔐 **Hash:** `{file_hash}`
+📅 **Created:** `{time.ctime(file_info['created_at'])}`
+🔗 **Telegram ID:** `{file_info['telegram_file_id']}`
+
+💡 **Usage:** Send `/info {unique_id} {file_hash}` to get this info anytime!"""
+                    
+                    await callback_query.answer()
+                    await callback_query.message.reply_text(info_text)
+                else:
+                    await callback_query.answer("❌ File not found!", show_alert=True)
+            else:
+                await callback_query.answer("❌ Invalid file info!", show_alert=True)
+                
+        except Exception as e:
+            await callback_query.answer(f"❌ Error: {e}", show_alert=True)
+
 
 # Separate GoFile upload handler
 async def handle_gofile_upload(message, status_msg, file_info):

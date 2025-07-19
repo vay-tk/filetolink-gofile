@@ -244,12 +244,12 @@ async def handle_media(_, message: Message):
     file_type = file_info['type']
     
     # Check file size limit
-    if file_info['size'] > 100 * 1024 * 1024:  # 100MB limit
+    if file_info['size'] > 900 * 1024 * 1024:  # 100MB limit
         await message.reply_text(
             f"❌ **File too large!**\n\n"
             f"📁 **Type:** `{file_type}`\n"
             f"📏 **Size:** `{file_size}`\n"
-            f"🚫 **Maximum allowed:** `100 MB`\n\n"
+            f"🚫 **Maximum allowed:** `900 MB`\n\n"
             f"Please send a smaller file."
         )
         return

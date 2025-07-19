@@ -129,44 +129,134 @@ async def start_command(_, message: Message):
     welcome_text = """
 🚀 **Welcome to GoFile Upload Bot!**
 
-📁 **How to use:**
-• Send me any document/file
-• I'll upload it to GoFile and give you a download link
+📁 **Supported file types:**
+• 📄 Documents (PDF, DOC, ZIP, etc.)
+• 🖼️ Photos (JPG, PNG, WEBP, etc.)
+• 🎥 Videos (MP4, AVI, MKV, etc.)
+• 🎵 Audio (MP3, WAV, OGG, etc.)
+• 🎙️ Voice messages
+• 📹 Video notes (circles)
+• 🎨 Stickers
+• 📎 Any other file type
 
 ✨ **Features:**
 • Fast uploads to GoFile
 • Progress tracking
 • Automatic file cleanup
-• Private uploads only
+• Anonymous uploads
+• Up to 100MB file size
 
 🔒 **Privacy:** Your files are uploaded anonymously to GoFile
 
-Just send me a file to get started! 📎
+Just send me any file or media! 📎
     """
     await message.reply_text(welcome_text)
 
 
-# Bot handler for document uploads
-@bot.on_message(filters.document & filters.private)
-async def handle_doc(_, message: Message):
+# Function to get appropriate filename and extension
+def get_file_info(message):
+    """Extract file info from different message types"""
+    if message.document:
+        return {
+            'file': message.document,
+            'name': message.document.file_name or f"document_{message.document.file_unique_id}",
+            'size': message.document.file_size,
+            'type': 'Document'
+        }
+    elif message.photo:
+        photo = message.photo
+        return {
+            'file': photo,
+            'name': f"photo_{photo.file_unique_id}.jpg",
+            'size': photo.file_size,
+            'type': 'Photo'
+        }
+    elif message.video:
+        video = message.video
+        name = video.file_name or f"video_{video.file_unique_id}.mp4"
+        return {
+            'file': video,
+            'name': name,
+            'size': video.file_size,
+            'type': 'Video'
+        }
+    elif message.audio:
+        audio = message.audio
+        # Try to construct filename from metadata
+        if audio.file_name:
+            name = audio.file_name
+        elif audio.title and audio.performer:
+            name = f"{audio.performer} - {audio.title}.mp3"
+        elif audio.title:
+            name = f"{audio.title}.mp3"
+        else:
+            name = f"audio_{audio.file_unique_id}.mp3"
+        return {
+            'file': audio,
+            'name': name,
+            'size': audio.file_size,
+            'type': 'Audio'
+        }
+    elif message.voice:
+        voice = message.voice
+        return {
+            'file': voice,
+            'name': f"voice_{voice.file_unique_id}.ogg",
+            'size': voice.file_size,
+            'type': 'Voice'
+        }
+    elif message.video_note:
+        video_note = message.video_note
+        return {
+            'file': video_note,
+            'name': f"video_note_{video_note.file_unique_id}.mp4",
+            'size': video_note.file_size,
+            'type': 'Video Note'
+        }
+    elif message.sticker:
+        sticker = message.sticker
+        ext = "webp" if not sticker.is_animated else "tgs"
+        return {
+            'file': sticker,
+            'name': f"sticker_{sticker.file_unique_id}.{ext}",
+            'size': sticker.file_size,
+            'type': 'Sticker'
+        }
+    return None
+
+
+# Universal media handler
+@bot.on_message((filters.document | filters.photo | filters.video | 
+                filters.audio | filters.voice | filters.video_note | 
+                filters.sticker) & filters.private)
+async def handle_media(_, message: Message):
     user = message.from_user
-    doc = message.document
     
-    # Show file info
-    file_size = format_file_size(doc.file_size)
-    file_name = doc.file_name or "Unknown"
+    # Get file information
+    file_info = get_file_info(message)
+    if not file_info:
+        await message.reply_text("❌ Unable to process this file type.")
+        return
     
-    # Check file size limit (Railway has memory limits)
-    if doc.file_size > 100 * 1024 * 1024:  # 100MB limit
+    file_obj = file_info['file']
+    file_name = file_info['name']
+    file_size = format_file_size(file_info['size'])
+    file_type = file_info['type']
+    
+    # Check file size limit
+    if file_info['size'] > 100 * 1024 * 1024:  # 100MB limit
         await message.reply_text(
             f"❌ **File too large!**\n\n"
-            f"📏 **File size:** `{file_size}`\n"
+            f"📁 **Type:** `{file_type}`\n"
+            f"📏 **Size:** `{file_size}`\n"
             f"🚫 **Maximum allowed:** `100 MB`\n\n"
             f"Please send a smaller file."
         )
         return
     
+    # Show initial status
     status_msg = await message.reply_text(
+        f"📁 **Type:** `{file_type}`\n"
         f"📄 **File:** `{file_name}`\n"
         f"📏 **Size:** `{file_size}`\n"
         f"⏳ **Status:** Downloading..."
@@ -174,17 +264,18 @@ async def handle_doc(_, message: Message):
 
     try:
         start_time = time.time()
-        # Use temporary directory for downloads
+        # Download the file
         file_path = await message.download(
-            file_name=f"{DOWNLOADS_DIR}/{doc.file_unique_id}_{doc.file_name}",
+            file_name=f"{DOWNLOADS_DIR}/{file_obj.file_unique_id}_{file_name}",
             progress=lambda current, total: None
         )
         download_time = time.time() - start_time
         
-        logger.info(f"Downloaded to {file_path} in {download_time:.2f}s")
+        logger.info(f"Downloaded {file_type} to {file_path} in {download_time:.2f}s")
 
         # Update status for upload
         await status_msg.edit_text(
+            f"📁 **Type:** `{file_type}`\n"
             f"📄 **File:** `{file_name}`\n"
             f"📏 **Size:** `{file_size}`\n"
             f"✅ **Downloaded:** `{download_time:.1f}s`\n"
@@ -195,13 +286,14 @@ async def handle_doc(_, message: Message):
         async def update_progress(status):
             try:
                 await status_msg.edit_text(
+                    f"📁 **Type:** `{file_type}`\n"
                     f"📄 **File:** `{file_name}`\n"
                     f"📏 **Size:** `{file_size}`\n"
                     f"✅ **Downloaded:** `{download_time:.1f}s`\n"
                     f"⏳ **Status:** {status}"
                 )
             except:
-                pass  # Ignore edit errors
+                pass
 
         start_upload_time = time.time()
         link = upload_to_gofile(file_path, lambda status: bot.loop.create_task(update_progress(status)))
@@ -209,6 +301,7 @@ async def handle_doc(_, message: Message):
 
         if link:
             await status_msg.edit_text(
+                f"📁 **Type:** `{file_type}`\n"
                 f"📄 **File:** `{file_name}`\n"
                 f"📏 **Size:** `{file_size}`\n"
                 f"✅ **Downloaded:** `{download_time:.1f}s`\n"
@@ -216,14 +309,27 @@ async def handle_doc(_, message: Message):
                 f"🔗 **Status:** Upload Complete!"
             )
             
+            # Add emoji based on file type
+            type_emoji = {
+                'Document': '📄',
+                'Photo': '🖼️',
+                'Video': '🎥',
+                'Audio': '🎵',
+                'Voice': '🎙️',
+                'Video Note': '📹',
+                'Sticker': '🎨'
+            }
+            
             await message.reply_text(
                 f"✅ **Upload Successful!**\n\n"
+                f"{type_emoji.get(file_type, '📎')} **{file_type}:** `{file_name}`\n"
                 f"🔗 [**Download Link**]({link})\n\n"
                 f"⚡ Total time: `{download_time + upload_time:.1f}s`",
                 disable_web_page_preview=True
             )
         else:
             await status_msg.edit_text(
+                f"📁 **Type:** `{file_type}`\n"
                 f"📄 **File:** `{file_name}`\n"
                 f"📏 **Size:** `{file_size}`\n"
                 f"✅ **Downloaded:** `{download_time:.1f}s`\n"
@@ -232,8 +338,9 @@ async def handle_doc(_, message: Message):
             await message.reply_text("❌ Failed to upload to GoFile. Please try again.")
 
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Error processing {file_type}: {e}")
         await status_msg.edit_text(
+            f"📁 **Type:** `{file_type}`\n"
             f"📄 **File:** `{file_name}`\n"
             f"📏 **Size:** `{file_size}`\n"
             f"❌ **Status:** Error occurred"
@@ -241,14 +348,17 @@ async def handle_doc(_, message: Message):
         await message.reply_text(f"❌ Error: {e}")
 
 
-# Handler for non-document files
-@bot.on_message(filters.private & ~filters.command("start") & ~filters.document)
-async def handle_other(_, message: Message):
+# Handler for unsupported message types
+@bot.on_message(filters.private & ~filters.command("start") & 
+                ~filters.document & ~filters.photo & ~filters.video & 
+                ~filters.audio & ~filters.voice & ~filters.video_note & 
+                ~filters.sticker)
+async def handle_unsupported(_, message: Message):
     await message.reply_text(
-        "❌ **Unsupported file type!**\n\n"
-        "📎 Please send a **document/file** for upload.\n"
-        "🚫 Photos, videos, and other media are not supported yet.\n\n"
-        "💡 **Tip:** Use 'Send as File' option for photos/videos."
+        "❌ **Unsupported message type!**\n\n"
+        "📎 Please send a **file, photo, video, audio, or document**.\n"
+        "🚫 Text messages, contacts, and locations are not supported.\n\n"
+        "💡 **Tip:** Use /start to see all supported file types."
     )
 
 

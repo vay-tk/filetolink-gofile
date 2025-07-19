@@ -446,28 +446,17 @@ async def handle_media(_, message: Message):
         f"📁 **Type:** `{file_type}`\n"
         f"📄 **File:** `{file_name}`\n"
         f"📏 **Size:** `{file_size}`\n"
-        f"⏳ **Status:** Generating links..."
+        f"⏳ **Status:** Generating instant links..."
     )
     
     try:
         # Get Telegram file path first
         file_path = await get_telegram_file_path(file_obj.file_id)
         
-        if not file_path:
-            await status_msg.edit_text(
-                f"❌ **Unable to get file path**\n\n"
-                f"📁 **Type:** `{file_type}`\n"
-                f"📄 **File:** `{file_name}`\n"
-                f"📏 **Size:** `{file_size}`\n\n"
-                f"🔄 **Falling back to GoFile upload...**"
-            )
-            await handle_gofile_upload(message, status_msg, file_info)
-            return
-        
         # Store file information and generate unique ID
         unique_id, file_hash = store_file_info(file_obj, file_name, file_info['size'], file_type)
         
-        if unique_id and file_hash:
+        if file_path and unique_id and file_hash:
             # Generate instant links with real Telegram URLs
             links = generate_instant_links(unique_id, file_hash, file_name, file_path)
             
@@ -479,7 +468,6 @@ async def handle_media(_, message: Message):
                     f"📊 **File Size:** `{file_size}`\n\n"
                     f"📥 **Download:** [Direct Link]({links['download']})\n"
                     f"🎬 **Stream:** [Stream Link]({links['stream']})\n\n"
-                    f"🔗 **File ID:** `{file_obj.file_id}`\n"
                     f"🆔 **Unique ID:** `{unique_id}`\n"
                     f"🔐 **Hash:** `{file_hash}`",
                     disable_web_page_preview=True
@@ -497,7 +485,7 @@ async def handle_media(_, message: Message):
                 
                 # Additional options
                 fallback_row = [
-                    InlineKeyboardButton("📱 Telegram Link", url=links['telegram_direct']),
+                    InlineKeyboardButton("📱 Telegram Direct", url=links['telegram_direct']),
                     InlineKeyboardButton("☁️ GoFile Upload", callback_data=f"gf_{unique_id}")
                 ]
                 keyboard_buttons.append(fallback_row)
@@ -513,10 +501,16 @@ async def handle_media(_, message: Message):
                 # Send final message with options
                 final_msg = f"""🚀 **Choose your preferred option:**
 
-📥 **Direct Download** - Instant, resumable
-🎬 **Direct Stream** - Stream in browser
+📥 **Direct Download** - Instant, resumable from Telegram
+🎬 **Direct Stream** - Stream in browser for videos/audio  
 📱 **Telegram Link** - Official Telegram URL
 ☁️ **GoFile Upload** - Permanent cloud storage
+
+✨ **Instant Features:**
+• ⚡ Download immediately (resumable)
+• 🎬 Stream directly in browser for videos/audio
+• 📱 Work from any device/browser
+• 🔄 No waiting, no upload needed!
 
 ⚡ **File Details:**
 🆔 ID: `{unique_id}`
@@ -531,20 +525,29 @@ async def handle_media(_, message: Message):
                 
                 # Store additional metadata for analytics
                 logger.info(f"Generated working links for {file_type}: {file_name} (ID: {unique_id})")
+                return  # Success - don't fall back to GoFile
                 
-            else:
-                # Fallback to GoFile upload if link generation fails
-                await status_msg.edit_text(
-                    f"⚠️ **Link generation failed**\n\n"
-                    f"📁 **Type:** `{file_type}`\n"
-                    f"📄 **File:** `{file_name}`\n"
-                    f"📏 **Size:** `{file_size}`\n\n"
-                    f"🔄 **Falling back to GoFile upload...**"
-                )
-                await handle_gofile_upload(message, status_msg, file_info)
-        else:
-            # Fallback to GoFile upload
-            await handle_gofile_upload(message, status_msg, file_info)
+        # If we reach here, something failed - show error and offer GoFile
+        await status_msg.edit_text(
+            f"⚠️ **Link generation failed**\n\n"
+            f"📁 **Type:** `{file_type}`\n"
+            f"📄 **File:** `{file_name}`\n"
+            f"📏 **Size:** `{file_size}`\n\n"
+            f"❌ Unable to get Telegram file path\n"
+            f"🔄 **Would you like to upload to GoFile instead?**"
+        )
+        
+        # Create keyboard with only GoFile option
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("☁️ Upload to GoFile", callback_data=f"force_gofile_{message.id}")]
+        ])
+        
+        await message.reply_text(
+            f"🔄 **Fallback Option Available:**\n\n"
+            f"Since instant links couldn't be generated, you can upload to GoFile for permanent storage.\n\n"
+            f"⚠️ **Note:** This requires downloading and re-uploading the file.",
+            reply_markup=keyboard
+        )
             
     except Exception as e:
         logger.error(f"Error processing {file_type}: {e}")
@@ -571,8 +574,6 @@ async def handle_callback(_, callback_query):
             await callback_query.message.edit_text("❌ File information not found!")
             return
             
-        stored_file_info = file_storage[unique_id]
-        
         # Get the original message to reconstruct file info
         message = callback_query.message.reply_to_message
         if not message:
@@ -580,6 +581,26 @@ async def handle_callback(_, callback_query):
             return
             
         # Get file info again from the original message
+        file_info = get_file_info(message)
+        if not file_info:
+            await callback_query.message.edit_text("❌ Unable to process this file!")
+            return
+            
+        # Start GoFile upload process
+        await handle_gofile_upload(message, callback_query.message, file_info)
+        
+    elif data.startswith("force_gofile_"):
+        # Handle forced GoFile upload when instant links fail
+        message_id = int(data.replace("force_gofile_", ""))
+        await callback_query.answer("Uploading to GoFile...")
+        
+        # Get the original message
+        message = callback_query.message.reply_to_message
+        if not message:
+            await callback_query.message.edit_text("❌ Original file not found!")
+            return
+            
+        # Get file info from the original message
         file_info = get_file_info(message)
         if not file_info:
             await callback_query.message.edit_text("❌ Unable to process this file!")

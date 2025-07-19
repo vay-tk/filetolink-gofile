@@ -17,18 +17,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Bot credentials from environment variables
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# Bot credentials from environment variables with error handling
+try:
+    API_ID = int(os.getenv("API_ID"))
+    API_HASH = os.getenv("API_HASH")
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    
+    if not all([API_ID, API_HASH, BOT_TOKEN]):
+        raise ValueError("Missing required environment variables")
+        
+    logger.info("Environment variables loaded successfully")
+    
+except (ValueError, TypeError) as e:
+    logger.error(f"Error loading environment variables: {e}")
+    logger.error("Make sure API_ID, API_HASH, and BOT_TOKEN are set in Railway")
+    exit(1)
 
 # Use temporary directory for downloads in cloud environment
 DOWNLOADS_DIR = os.path.join(tempfile.gettempdir(), "bot_downloads")
 if not os.path.exists(DOWNLOADS_DIR):
     os.makedirs(DOWNLOADS_DIR)
 
-# Start bot
-bot = Client("gofile_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Start bot with error handling
+try:
+    bot = Client("gofile_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+    logger.info("Bot client created successfully")
+except Exception as e:
+    logger.error(f"Failed to create bot client: {e}")
+    exit(1)
 
 
 # Upload function using GoFile's current endpoint
@@ -239,4 +255,8 @@ async def handle_other(_, message: Message):
 if __name__ == "__main__":
     logger.info("Starting GoFile Upload Bot on Railway...")
     logger.info("Bot is ready to handle file uploads!")
-    bot.run()
+    try:
+        bot.run()
+    except Exception as e:
+        logger.error(f"Bot crashed: {e}")
+        exit(1)
